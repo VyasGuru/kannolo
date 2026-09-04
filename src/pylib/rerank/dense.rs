@@ -62,6 +62,37 @@ trait DenseRerankSearcher: Send + Sync {
     fn dim(&self) -> usize;
     /// Write both stages to one file.
     fn save(&self, path: &str) -> PyResult<()>;
+    /// Change the query-side bit width in place.
+    ///
+    /// Returns `false` if this encoder does not quantize the query, in which case there is nothing
+    /// to set. Only RaBitQ's 1-bit encoder does.
+    fn set_query_bits(&mut self, bits: u32) -> bool;
+}
+
+/// Lets `set_query_bits` reach a generic encoder's `QueryParams` without naming every
+/// monomorphization.
+///
+/// `query_bits` describes how the *query* is processed -- sign-binarized at 1 bit, magnitude-coded
+/// above -- and never touches the stored codes, so an index built at one width serves every other
+/// width unchanged. Without this the width could only be fixed at construction, which meant
+/// building one index per width when those indexes are byte-identical.
+trait SettableQueryBits {
+    fn set_bits(&mut self, bits: u32) -> bool;
+}
+
+/// The encoders whose queries are not quantized (`pq`, `rabitq-ext`) carry `()` here.
+impl SettableQueryBits for () {
+    fn set_bits(&mut self, _bits: u32) -> bool {
+        false
+    }
+}
+
+impl SettableQueryBits for RabitqQueryParams {
+    fn set_bits(&mut self, bits: u32) -> bool {
+        // Callers validate the range; `RabitqQueryParams::new` panics outside 1..=8.
+        *self = RabitqQueryParams::new(bits);
+        true
+    }
 }
 
 /// One first-stage encoder `E` over one graph backend `G`, plus the `f16` rerank dataset.
@@ -84,7 +115,7 @@ where
 impl<E, G> DenseRerankSearcher for Stage<E, G>
 where
     E: DenseVectorEncoder + Sync + Send + 'static,
-    <E as VectorEncoder>::QueryParams: Clone + Sync + Send,
+    <E as VectorEncoder>::QueryParams: Clone + Sync + Send + SettableQueryBits,
     <E as VectorEncoder>::Distance:
         ScalarDenseSupportedDistance + Distance + From<f32> + Sync + Send,
     DenseDataset<E>: Dataset<Encoder = E> + Sync + SpaceUsage,
@@ -129,6 +160,10 @@ where
 
     fn save(&self, path: &str) -> PyResult<()> {
         self.index.save_index(path).map_err(save_index_err)
+    }
+
+    fn set_query_bits(&mut self, bits: u32) -> bool {
+        self.query_params.set_bits(bits)
     }
 }
 
@@ -196,7 +231,7 @@ fn finish<E, G>(
 ) -> Box<dyn DenseRerankSearcher>
 where
     E: DenseVectorEncoder + Sync + Send + 'static,
-    <E as VectorEncoder>::QueryParams: Clone + Sync + Send,
+    <E as VectorEncoder>::QueryParams: Clone + Sync + Send + SettableQueryBits,
     <E as VectorEncoder>::Distance:
         ScalarDenseSupportedDistance + Distance + From<f32> + Sync + Send,
     DenseDataset<E>: Dataset<Encoder = E> + Sync + SpaceUsage,
@@ -231,7 +266,7 @@ fn finish_loaded<E, G>(
 ) -> Box<dyn DenseRerankSearcher>
 where
     E: DenseVectorEncoder + Sync + Send + 'static,
-    <E as VectorEncoder>::QueryParams: Clone + Sync + Send,
+    <E as VectorEncoder>::QueryParams: Clone + Sync + Send + SettableQueryBits,
     <E as VectorEncoder>::Distance:
         ScalarDenseSupportedDistance + Distance + From<f32> + Sync + Send,
     DenseDataset<E>: Dataset<Encoder = E> + Sync + SpaceUsage,
@@ -259,7 +294,7 @@ fn load_stage<E, G>(
 ) -> PyResult<Box<dyn DenseRerankSearcher>>
 where
     E: DenseVectorEncoder + Sync + Send + 'static,
-    <E as VectorEncoder>::QueryParams: Clone + Sync + Send,
+    <E as VectorEncoder>::QueryParams: Clone + Sync + Send + SettableQueryBits,
     <E as VectorEncoder>::Distance:
         ScalarDenseSupportedDistance + Distance + From<f32> + Sync + Send,
     DenseDataset<E>: Dataset<Encoder = E> + Sync + SpaceUsage,
@@ -713,6 +748,30 @@ impl DenseRerankHNSW {
         };
 
         Ok(DenseRerankHNSW { inner })
+    }
+
+    /// Change the RaBitQ query-side bit width on this live index.
+    ///
+    /// The width only affects how the query is processed and leaves the stored codes at the width
+    /// they were encoded with, so one index serves every width: a query-width ladder is a set of
+    /// frontier points swept as search arguments, not a set of separate builds of byte-identical
+    /// indexes.
+    ///
+    /// Errors if `bits` is outside `1..=8`, or if the encoder does not quantize its query at all
+    /// (`pq` and `rabitq-ext`), rather than silently doing nothing.
+    pub fn set_query_bits(&mut self, bits: u32) -> PyResult<()> {
+        if !(1..=8).contains(&bits) {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "query_bits must be in 1..=8, got {bits}"
+            )));
+        }
+        if !self.inner.set_query_bits(bits) {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "this encoder does not quantize the query, so query_bits has no meaning; only \
+                 the 1-bit RaBitQ encoder does",
+            ));
+        }
+        Ok(())
     }
 
     /// Two-stage search for a single query.

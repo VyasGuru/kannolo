@@ -262,7 +262,8 @@ For `DenseRerankHNSW` two arguments behave differently from the rest:
   back with the index.
 - `rabitq_query_bits` **is** accepted, and is free to differ from the build-time value: it
   describes how a query is processed and touches nothing that was stored. One saved index
-  therefore serves every query width.
+  therefore serves every query width, and `set_query_bits` can change it again afterwards
+  without saving anything.
 
 For the two-stage classes, `save`/`load` round-trips the index as it stands, whereas
 `build_from_file` reconstructs it from a first-stage index plus the original dataset — so
@@ -375,6 +376,31 @@ dists, ids = index.search(
 `k_candidates` is the knob to sweep: it sets how many first-stage candidates get reranked
 against the exact `f16` vectors. `ef_search` is usually a multiple of it. `alpha` keeps only
 candidates whose first-stage score is within a relative slack of the k-th best.
+
+#### Sweeping the RaBitQ query width
+
+Under `encoder="rabitq"` the query-side bit width can be changed on a live index:
+
+```python
+index = DenseRerankHNSW.build_from_array(data.flatten(), dim=768, encoder="rabitq")
+
+for bits in (1, 2, 4, 8):
+    index.set_query_bits(bits)
+    dists, ids = index.search(query, k=10, k_candidates=100, ef_search=100)
+```
+
+The width only affects how a *query* is processed and leaves the stored codes at the width they
+were encoded with, so one index serves every width — a width ladder is a set of search
+arguments, not a set of separate builds of byte-identical indexes. Results are identical to
+those from an index built at that width.
+
+It raises `ValueError` for a width outside `1..=8`, and for `encoder="pq"` or
+`encoder="rabitq-ext"`, whose queries are not quantized at all, rather than silently doing
+nothing.
+
+The width is **not** part of the saved index — see Save / Load above — so a reloaded index
+starts at whatever `rabitq_query_bits` was passed to `load`, regardless of what was set when it
+was saved.
 
 The batch form takes the queries flattened into one contiguous buffer and returns query-major
 results:
