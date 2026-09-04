@@ -14,7 +14,6 @@
 mod common;
 mod flat;
 mod hnsw;
-#[cfg(feature = "multivec")]
 mod rerank;
 
 pub use flat::{DenseFlatIndex, SparseFlatIndex};
@@ -22,5 +21,6 @@ pub use hnsw::{
     DensePQHNSW, DensePlainHNSW, SparseDotVByteHNSW, SparseFixedU8HNSW, SparseFixedU16HNSW,
     SparsePlainHNSW,
 };
+pub use rerank::DenseRerankHNSW;
 #[cfg(feature = "multivec")]
 pub use rerank::{SparseMultivecRerankIndex, SparseMultivecTwoLevelsPQRerankIndex};

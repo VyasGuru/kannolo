@@ -3,6 +3,7 @@
 This document describes the current CLI surface for:
 - `hnsw_build`
 - `hnsw_search`
+- `hnsw_rerank_search_dense`
 - `ivf_build`
 - `ivf_search`
 
@@ -60,6 +61,46 @@ Options:
       --lambda <LAMBDA>                  [default: 1]
       --num-runs <NUM_RUNS>              [default: 1]
 ```
+
+## `hnsw_rerank_search_dense`
+
+Two-stage dense search: a compressed HNSW first stage over PQ / RaBitQ / RaBitQ-ext codes,
+reranked against a plain `f16` copy of the same collection. The dense counterpart of
+`hnsw_rerank_search`, which is sparse-multivector search.
+
+The graph is always built over `f16` and only its *dataset* is replaced by codes, so the compressed representation never takes part in construction. The rerank file is the same collection at plain `f16`, in the original vector order.
+
+```bash
+Usage: hnsw_rerank_search_dense [OPTIONS] --index-file <INDEX_FILE> --rerank-file <RERANK_FILE> --query-file <QUERY_FILE> --encoder <ENCODER>
+
+Options:
+  -i, --index-file <INDEX_FILE>
+  -r, --rerank-file <RERANK_FILE>
+  -q, --query-file <QUERY_FILE>
+  -o, --output-path <OUTPUT_PATH>
+      --encoder <ENCODER>                [possible values: pq, rabitq, rabitq-ext]
+      --graph-type <GRAPH_TYPE>          [default: permuted] [possible values: standard, permuted, streamvbyte]
+      --distance <DISTANCE>              [default: dotproduct]
+      --pq-subspaces <PQ_SUBSPACES>      [default: 0]
+      --rabitq-total-bits <RABITQ_TOTAL_BITS>  [default: 4]
+      --rabitq-query-bits <RABITQ_QUERY_BITS>  [default: 1]
+  -k, --k <K>                            [default: 10]
+      --k-candidates <K_CANDIDATES>      [default: 100]
+      --ef-search <EF_SEARCH>            [default: 100]
+      --alpha <ALPHA>
+      --beta <BETA>
+      --early-termination <EARLY_TERMINATION> [default: none] [possible values: none, distance-adaptive]
+      --lambda <LAMBDA>
+      --num-runs <NUM_RUNS>              [default: 1]
+```
+
+`--k-candidates` is the frontier knob: it sets how many first-stage candidates are reranked.
+`--ef-search` sizes the first-stage candidate list and is usually a multiple of
+`--k-candidates`. `--alpha` prunes candidates whose first-stage score falls outside a relative
+slack of the k-th best; `--beta` is rerank early exit and is off unless given.
+
+The encoder-specific widths must match what the index was built with: `--pq-subspaces` for
+`--encoder pq`, and `--rabitq-total-bits` for `--encoder rabitq-ext`. `--rabitq-query-bits` applies to `--encoder rabitq` and describes only how the query is processed, so it can be varied without rebuilding.
 
 ## `ivf_build`
 
@@ -183,7 +224,7 @@ The binaries reject invalid combinations:
 3. `fixedu8` and `fixedu16` value types are sparse-only.
 4. `component-type` is sparse-only.
 5. `dotvbyte` requires `component-type = u16`.
-6. `pq-subspaces` must be one of `4, 8, 16, 32, 48, 64, 96, 128, 192` and must divide the vector dimensionality.
+6. `pq-subspaces` must be one of `4, 8, 16, 24, 32, 48, 64, 96, 128, 192, 256` and must divide the vector dimensionality.
 7. For PQ, `--nbits` and `--sample-size` are accepted for compatibility but ignored by vectorium.
 8. `--graph-type streamvbyte` caps the ground level at 256 neighbors per node, so it requires `--m` of at most 128. This is checked before the build starts, not after.
 

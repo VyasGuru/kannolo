@@ -131,6 +131,23 @@ where
     Ok(dataset.into())
 }
 
+/// Error for a failed `save_index`.
+pub(super) fn save_index_err<E: std::fmt::Debug>(e: E) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Error saving index: {e:?}"))
+}
+
+/// Error for a failed `load_index`.
+///
+/// Index files carry no header or type tag, so a file written with different build arguments
+/// decodes into garbage or fails outright rather than reporting a mismatch.
+pub(super) fn load_index_err<E: std::fmt::Debug>(e: E) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyIOError, _>(format!(
+        "Error loading index: {e:?}. Index files are not self-describing: check that the \
+         arguments given here match the ones used when the index was built, and that the file \
+         was written by this version of kannolo."
+    ))
+}
+
 pub(super) fn push_results<D: Distance>(
     results: Vec<vectorium::dataset::ScoredVector<D>>,
     k: usize,

@@ -13,9 +13,11 @@ use rayon::prelude::*;
 use vectorium::distances::{DotProduct, SquaredEuclideanDistance};
 use vectorium::encoders::dense_scalar::PlainDenseQuantizer;
 use vectorium::vector::DenseVectorView;
-use vectorium::{Dataset, DenseDataset};
+use vectorium::{Dataset, DenseDataset, IndexSerializer};
 
-use crate::pylib::common::{MetricKind, parse_metric, push_results, read_npy_dataset_f16};
+use crate::pylib::common::{
+    MetricKind, load_index_err, parse_metric, push_results, read_npy_dataset_f16, save_index_err,
+};
 
 enum DenseFlatIndexEnum {
     Euclidean(DenseDataset<PlainDenseQuantizer<f16, SquaredEuclideanDistance>>),
@@ -41,6 +43,34 @@ impl DenseFlatIndex {
                 let dataset = read_npy_dataset_f16::<DotProduct>(data_path)?;
                 DenseFlatIndexEnum::DotProduct(dataset)
             }
+        };
+
+        Ok(DenseFlatIndex { inner })
+    }
+
+    pub fn save(&self, path: &str) -> PyResult<()> {
+        match &self.inner {
+            DenseFlatIndexEnum::Euclidean(dataset) => dataset.save_index(path),
+            DenseFlatIndexEnum::DotProduct(dataset) => dataset.save_index(path),
+        }
+        .map_err(save_index_err)
+    }
+
+    /// Loads a previously saved index. `metric` must match the value used at build time.
+    #[staticmethod]
+    #[pyo3(signature = (path, metric="dotproduct".to_string()))]
+    pub fn load(path: &str, metric: String) -> PyResult<Self> {
+        let inner = match parse_metric(&metric)? {
+            MetricKind::Euclidean => DenseFlatIndexEnum::Euclidean(
+                DenseDataset::<PlainDenseQuantizer<f16, SquaredEuclideanDistance>>::load_index(
+                    path,
+                )
+                .map_err(load_index_err)?,
+            ),
+            MetricKind::DotProduct => DenseFlatIndexEnum::DotProduct(
+                DenseDataset::<PlainDenseQuantizer<f16, DotProduct>>::load_index(path)
+                    .map_err(load_index_err)?,
+            ),
         };
 
         Ok(DenseFlatIndex { inner })

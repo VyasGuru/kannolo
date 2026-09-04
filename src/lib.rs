@@ -10,6 +10,8 @@ use crate::pylib::DensePQHNSW as DensePQIndexPy;
 #[cfg(feature = "python")]
 use crate::pylib::DensePlainHNSW as DensePlainIndexPy;
 #[cfg(feature = "python")]
+use crate::pylib::DenseRerankHNSW;
+#[cfg(feature = "python")]
 use crate::pylib::SparseDotVByteHNSW as SparseDotVByteIndexPy;
 #[cfg(feature = "python")]
 use crate::pylib::SparseFixedU8HNSW as SparseFixedU8IndexPy;
@@ -46,6 +48,7 @@ pub fn kannolo(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DensePQIndexPy>()?;
     m.add_class::<DenseFlatIndex>()?;
     m.add_class::<SparseFlatIndex>()?;
+    m.add_class::<DenseRerankHNSW>()?;
     #[cfg(feature = "multivec")]
     m.add_class::<SparseMultivecRerankIndex>()?;
     #[cfg(feature = "multivec")]

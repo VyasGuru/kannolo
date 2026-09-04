@@ -385,7 +385,7 @@ fn run_kmeans(
             .with_num_neighbors(KMEANS_HNSW_M)
             .with_ef_construction(KMEANS_HNSW_EF_CONSTRUCTION);
         let search_cfg = HNSWSearchConfiguration::default().with_ef_search(KMEANS_HNSW_EF_SEARCH);
-        kmeans.train_with_index::<HNSW<DensePlain, Graph>>(
+        kmeans.train_with_index::<HNSW<DensePlain, Graph>, f32, f32>(
             dataset,
             n_clusters,
             None,

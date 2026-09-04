@@ -158,6 +158,19 @@ impl DensePlainHNSW {
         })
     }
 
+    /// Total bytes held by the dataset plus every graph level, as reported by `SpaceUsage`.
+    ///
+    /// This is the library's own accounting, not a resident-set measurement: a benchmark harness
+    /// that also records process USS can use the two together.
+    pub fn space_usage_bytes(&self) -> usize {
+        match &self.inner {
+            DensePlainHNSWEnum::Euclidean(index) => index.space_usage_bytes(),
+            DensePlainHNSWEnum::DotProduct(index) => index.space_usage_bytes(),
+            DensePlainHNSWEnum::EuclideanStreamVByte(index) => index.space_usage_bytes(),
+            DensePlainHNSWEnum::DotProductStreamVByte(index) => index.space_usage_bytes(),
+        }
+    }
+
     pub fn save(&self, path: &str) -> PyResult<()> {
         match &self.inner {
             DensePlainHNSWEnum::Euclidean(index) => index.save_index(path).map_err(|e| {

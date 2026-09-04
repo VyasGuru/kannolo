@@ -10,13 +10,14 @@ use numpy::{PyArray1, PyReadonlyArray1};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
-use vectorium::PlainSparseDataset;
 use vectorium::distances::DotProduct;
 use vectorium::readers::read_seismic_format;
 use vectorium::vector::SparseVectorView;
+use vectorium::{IndexSerializer, PlainSparseDataset};
 
 use crate::pylib::common::{
-    build_sparse_dataset_from_parts, convert_components_to_u16, push_results,
+    build_sparse_dataset_from_parts, convert_components_to_u16, load_index_err, push_results,
+    save_index_err,
 };
 
 enum SparseFlatIndexEnum {
@@ -59,6 +60,26 @@ impl SparseFlatIndex {
             offsets_usize,
             dim,
         )?;
+
+        Ok(SparseFlatIndex {
+            inner: SparseFlatIndexEnum::DotProduct(dataset),
+        })
+    }
+
+    pub fn save(&self, path: &str) -> PyResult<()> {
+        match &self.inner {
+            SparseFlatIndexEnum::DotProduct(dataset) => dataset.save_index(path),
+        }
+        .map_err(save_index_err)
+    }
+
+    /// Loads a previously saved index. Sparse flat indexes are dot-product only, so there is
+    /// nothing to disambiguate.
+    #[staticmethod]
+    #[pyo3(signature = (path))]
+    pub fn load(path: &str) -> PyResult<Self> {
+        let dataset =
+            PlainSparseDataset::<u16, f16, DotProduct>::load_index(path).map_err(load_index_err)?;
 
         Ok(SparseFlatIndex {
             inner: SparseFlatIndexEnum::DotProduct(dataset),

@@ -58,7 +58,7 @@ Build an HNSW index from dense or sparse data.
 
 **PQ-specific (when --encoder pq):**
 ```bash
---pq-subspaces <int>      Number of subspaces. Supported: 4, 8, 16, 32, 48, 64, 96, 128, 192
+--pq-subspaces <int>      Number of subspaces. Supported: 4, 8, 16, 24, 32, 48, 64, 96, 128, 192, 256
                           (must divide the vector dimensionality)
 ```
 
@@ -234,21 +234,20 @@ Two-stage search: first-stage sparse HNSW + second-stage dense multivector reran
 For **plain quantizer**:
 ```
 multivec_data/
-  documents.npy              [n_docs, n_tokens, token_dim]
-  queries.npy                [n_queries, n_tokens, token_dim]
-  doclens.npy                [n_docs]
+  documents.npy              [n_tokens, token_dim]  uint16, reinterpreted as f16
+  queries.npy                [n_queries, n_tokens, token_dim]  float32
+  doclens.npy                [n_docs]  int32
 ```
 
 For **two-levels (PQ) quantizer**:
 ```
 multivec_data/
-  documents.npy              [n_docs, n_tokens, token_dim]
-  queries.npy                [n_queries, n_tokens, token_dim]
-  doclens.npy                [n_docs]
-  centroids.npy              [n_centroids, token_dim]
-  pq_centroids.npy           [n_centroids, M, subspace_dim]
-  residuals.npy              [n_docs, n_tokens, token_dim]
-  index_assignment.npy       [n_docs, n_tokens]
+  queries.npy                [n_queries, n_tokens, token_dim]  float32
+  doclens.npy                [n_docs]  int32
+  centroids.npy              [n_coarse_centroids, token_dim]  float32
+  pq_centroids.npy           [M * 256 * dsub]  float32, dsub = token_dim / M
+  residuals.npy              [n_tokens, M]  uint8, PQ codes
+  index_assignment.npy       [n_tokens]  uint64, coarse centroid index per token
 ```
 
 **Search parameters:**

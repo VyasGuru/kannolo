@@ -770,6 +770,25 @@ where
             }
             index.print_space_usage_bytes();
         }
+        24 => {
+            let index: HNSW<DenseDataset<ProductQuantizer<24, D>>, G> =
+                <HNSW<DenseDataset<ProductQuantizer<24, D>>, G> as IndexSerializer>::load_index(
+                    &args.index_file,
+                )
+                .unwrap();
+            for _ in 0..args.num_runs {
+                for query in queries.iter() {
+                    let start_time = Instant::now();
+                    let res = index.search(query, args.k, &config);
+                    results.extend(
+                        res.into_iter()
+                            .map(|scored| (scored.distance.distance(), scored.vector as usize)),
+                    );
+                    total_time_search += start_time.elapsed().as_micros();
+                }
+            }
+            index.print_space_usage_bytes();
+        }
         32 => {
             let index: HNSW<DenseDataset<ProductQuantizer<32, D>>, G> =
                 <HNSW<DenseDataset<ProductQuantizer<32, D>>, G> as IndexSerializer>::load_index(

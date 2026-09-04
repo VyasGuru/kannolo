@@ -106,7 +106,7 @@ See `experiments/compressed_graph/dense_sift1m.toml` for a complete example.
 
 ### Sections
 - `[indexing_parameters]`: Traditional HNSW parameters (`m`, `ef-construction`, `metric`)
-- `[pq_parameters]`: PQ-specific parameters (`pq-subspaces`, `nbits`, `sample-size`) when using PQ encoder. Supported `pq-subspaces` values are `4, 8, 16, 32, 48, 64, 96, 128, 192`, and the value must divide the vector dimensionality. `nbits` and `sample-size` are accepted for compatibility but ignored by the current vectorium PQ implementation.
+- `[pq_parameters]`: PQ-specific parameters (`pq-subspaces`, `nbits`, `sample-size`) when using PQ encoder. Supported `pq-subspaces` values are `4, 8, 16, 24, 32, 48, 64, 96, 128, 192, 256`, and the value must divide the vector dimensionality. `nbits` and `sample-size` are accepted for compatibility but ignored by the current vectorium PQ implementation.
 - `[folder]`: Directory paths for data, indexes, and experiments
 - `[filename]`: Filenames for dataset, queries, groundtruth, etc.
 - `[settings]`: Runtime settings (k, NUMA, build flag, evaluation metric)

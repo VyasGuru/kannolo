@@ -241,7 +241,13 @@ fn parse_metric(metric: &str) -> Distance {
     }
 }
 
-const PQ_SUPPORTED_SUBSPACES: [usize; 9] = [128, 192, 96, 64, 48, 32, 16, 8, 4];
+/// Order matters: `--pq-subspaces 0` picks the first entry that divides the dimension.
+///
+/// The two new widths sit at the end so that adding them cannot change what auto-selection
+/// returns. Each is a multiple of an earlier entry (`8 | 24`, `128 | 256`), so any dimension one
+/// of them divides is already matched further up the list and the search never reaches them.
+/// They are only ever selected by being asked for explicitly.
+const PQ_SUPPORTED_SUBSPACES: [usize; 11] = [128, 192, 96, 64, 48, 32, 16, 8, 4, 24, 256];
 
 fn choose_pq_subspaces(dim: usize, requested: usize) -> usize {
     if requested == 0 {
@@ -251,14 +257,14 @@ fn choose_pq_subspaces(dim: usize, requested: usize) -> usize {
             }
         }
         eprintln!(
-            "Error: Could not auto-select pq-subspaces for dimension {dim}. Supported: 4, 8, 16, 32, 48, 64, 96, 128, 192."
+            "Error: Could not auto-select pq-subspaces for dimension {dim}. Supported: 4, 8, 16, 24, 32, 48, 64, 96, 128, 192, 256."
         );
         process::exit(1);
     }
 
     if !PQ_SUPPORTED_SUBSPACES.contains(&requested) {
         eprintln!(
-            "Error: Unsupported pq-subspaces value {requested}. Supported: 4, 8, 16, 32, 48, 64, 96, 128, 192."
+            "Error: Unsupported pq-subspaces value {requested}. Supported: 4, 8, 16, 24, 32, 48, 64, 96, 128, 192, 256."
         );
         process::exit(1);
     }
@@ -602,12 +608,14 @@ where
         4 => build_dense_pq_with_m_l2::<4, G>(dataset, config, &args.output_file),
         8 => build_dense_pq_with_m_l2::<8, G>(dataset, config, &args.output_file),
         16 => build_dense_pq_with_m_l2::<16, G>(dataset, config, &args.output_file),
+        24 => build_dense_pq_with_m_l2::<24, G>(dataset, config, &args.output_file),
         32 => build_dense_pq_with_m_l2::<32, G>(dataset, config, &args.output_file),
         48 => build_dense_pq_with_m_l2::<48, G>(dataset, config, &args.output_file),
         64 => build_dense_pq_with_m_l2::<64, G>(dataset, config, &args.output_file),
         96 => build_dense_pq_with_m_l2::<96, G>(dataset, config, &args.output_file),
         128 => build_dense_pq_with_m_l2::<128, G>(dataset, config, &args.output_file),
         192 => build_dense_pq_with_m_l2::<192, G>(dataset, config, &args.output_file),
+        256 => build_dense_pq_with_m_l2::<256, G>(dataset, config, &args.output_file),
         _ => unreachable!(),
     }
 }
@@ -622,12 +630,14 @@ where
         4 => build_dense_pq_with_m_ip::<4, G>(dataset, config, &args.output_file),
         8 => build_dense_pq_with_m_ip::<8, G>(dataset, config, &args.output_file),
         16 => build_dense_pq_with_m_ip::<16, G>(dataset, config, &args.output_file),
+        24 => build_dense_pq_with_m_ip::<24, G>(dataset, config, &args.output_file),
         32 => build_dense_pq_with_m_ip::<32, G>(dataset, config, &args.output_file),
         48 => build_dense_pq_with_m_ip::<48, G>(dataset, config, &args.output_file),
         64 => build_dense_pq_with_m_ip::<64, G>(dataset, config, &args.output_file),
         96 => build_dense_pq_with_m_ip::<96, G>(dataset, config, &args.output_file),
         128 => build_dense_pq_with_m_ip::<128, G>(dataset, config, &args.output_file),
         192 => build_dense_pq_with_m_ip::<192, G>(dataset, config, &args.output_file),
+        256 => build_dense_pq_with_m_ip::<256, G>(dataset, config, &args.output_file),
         _ => unreachable!(),
     }
 }
@@ -643,12 +653,14 @@ where
         4 => build_dense_pq_with_m_l2_permuted::<4, Ndst>(dataset, config, &args.output_file),
         8 => build_dense_pq_with_m_l2_permuted::<8, Ndst>(dataset, config, &args.output_file),
         16 => build_dense_pq_with_m_l2_permuted::<16, Ndst>(dataset, config, &args.output_file),
+        24 => build_dense_pq_with_m_l2_permuted::<24, Ndst>(dataset, config, &args.output_file),
         32 => build_dense_pq_with_m_l2_permuted::<32, Ndst>(dataset, config, &args.output_file),
         48 => build_dense_pq_with_m_l2_permuted::<48, Ndst>(dataset, config, &args.output_file),
         64 => build_dense_pq_with_m_l2_permuted::<64, Ndst>(dataset, config, &args.output_file),
         96 => build_dense_pq_with_m_l2_permuted::<96, Ndst>(dataset, config, &args.output_file),
         128 => build_dense_pq_with_m_l2_permuted::<128, Ndst>(dataset, config, &args.output_file),
         192 => build_dense_pq_with_m_l2_permuted::<192, Ndst>(dataset, config, &args.output_file),
+        256 => build_dense_pq_with_m_l2_permuted::<256, Ndst>(dataset, config, &args.output_file),
         _ => unreachable!(),
     }
 }
@@ -663,12 +675,14 @@ where
         4 => build_dense_pq_with_m_ip_permuted::<4, Ndst>(dataset, config, &args.output_file),
         8 => build_dense_pq_with_m_ip_permuted::<8, Ndst>(dataset, config, &args.output_file),
         16 => build_dense_pq_with_m_ip_permuted::<16, Ndst>(dataset, config, &args.output_file),
+        24 => build_dense_pq_with_m_ip_permuted::<24, Ndst>(dataset, config, &args.output_file),
         32 => build_dense_pq_with_m_ip_permuted::<32, Ndst>(dataset, config, &args.output_file),
         48 => build_dense_pq_with_m_ip_permuted::<48, Ndst>(dataset, config, &args.output_file),
         64 => build_dense_pq_with_m_ip_permuted::<64, Ndst>(dataset, config, &args.output_file),
         96 => build_dense_pq_with_m_ip_permuted::<96, Ndst>(dataset, config, &args.output_file),
         128 => build_dense_pq_with_m_ip_permuted::<128, Ndst>(dataset, config, &args.output_file),
         192 => build_dense_pq_with_m_ip_permuted::<192, Ndst>(dataset, config, &args.output_file),
+        256 => build_dense_pq_with_m_ip_permuted::<256, Ndst>(dataset, config, &args.output_file),
         _ => unreachable!(),
     }
 }

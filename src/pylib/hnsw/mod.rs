@@ -29,13 +29,13 @@ use pyo3::prelude::*;
 /// names the user-visible behaviour, while the `StreamVByteNeighbors` type it selects names
 /// the storage that implements it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum GraphTypeKind {
+pub(super) enum GraphTypeKind {
     Standard,
     Permuted,
     Compressed,
 }
 
-fn parse_graph_type(graph_type: &str) -> PyResult<GraphTypeKind> {
+pub(super) fn parse_graph_type(graph_type: &str) -> PyResult<GraphTypeKind> {
     match graph_type.to_lowercase().as_str() {
         "standard" => Ok(GraphTypeKind::Standard),
         "permuted" => Ok(GraphTypeKind::Permuted),
@@ -54,7 +54,7 @@ fn parse_graph_type(graph_type: &str) -> PyResult<GraphTypeKind> {
 /// Checked here rather than in `StreamVByteNeighbors::from`, which only runs once the whole
 /// index has already been built — and which would abort the interpreter rather than raise,
 /// since the release profile sets `panic = "abort"`.
-fn parse_build_graph_type(graph_type: &str, m: usize) -> PyResult<GraphTypeKind> {
+pub(super) fn parse_build_graph_type(graph_type: &str, m: usize) -> PyResult<GraphTypeKind> {
     let gt = parse_graph_type(graph_type)?;
 
     if gt == GraphTypeKind::Compressed && 2 * m > MAX_NEIGHBORS_PER_NODE {

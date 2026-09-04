@@ -19,7 +19,9 @@ use vectorium::vector::DenseMultiVectorView;
 use vectorium::vector::SparseVectorView;
 use vectorium::{MultiVectorDataset, PlainMultiVecQuantizer};
 
-use crate::pylib::common::{convert_components_to_u16, push_results};
+use crate::pylib::common::{
+    convert_components_to_u16, load_index_err, push_results, save_index_err,
+};
 
 fn load_multivec_dataset_plain(
     data_folder: &str,
@@ -103,8 +105,10 @@ impl SparseMultivecRerankIndex {
     ///
     /// # Multivector Data Folder Structure (Plain Quantizer)
     /// The folder must contain the following files:
-    /// * `documents.npy` – Dense document embeddings (shape: [n_documents, n_tokens, token_dim], dtype: float32)
-    /// * `doclens.npy` – Document lengths (shape: [n_documents], dtype: int32 or int64)
+    /// * `documents.npy` – Token embeddings (shape: [n_tokens, token_dim], dtype: uint16,
+    ///   reinterpreted as f16). Note this is 2-D and token-major: documents are delimited by
+    ///   `doclens`, not by an array dimension.
+    /// * `doclens.npy` – Document lengths (shape: [n_documents], dtype: int32)
     ///
     #[staticmethod]
     #[pyo3(signature = (sparse_index_path, multivec_data_folder))]
@@ -125,6 +129,26 @@ impl SparseMultivecRerankIndex {
         Ok(SparseMultivecRerankIndex {
             inner: RerankIndex::new(sparse_index, multivec_dataset),
         })
+    }
+
+    /// Saves the whole two-stage index — first-stage graph and rerank dataset — to one file.
+    ///
+    /// `build_from_file` reconstructs the index from a saved first-stage index plus the original
+    /// multivector folder; this instead round-trips the index as it stands, so the rerank
+    /// dataset does not have to be re-read and re-encoded.
+    pub fn save(&self, path: &str) -> PyResult<()> {
+        self.inner.save_index(path).map_err(save_index_err)
+    }
+
+    /// Loads an index written by [`Self::save`].
+    ///
+    /// Takes no build arguments: this class has exactly one concrete instantiation.
+    #[staticmethod]
+    #[pyo3(signature = (path))]
+    pub fn load(path: &str) -> PyResult<Self> {
+        let inner = RerankIndex::load_index(path).map_err(load_index_err)?;
+
+        Ok(SparseMultivecRerankIndex { inner })
     }
 
     /// Search with reranking using plain multivector encoding (single query).

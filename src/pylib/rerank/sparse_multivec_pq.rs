@@ -19,7 +19,9 @@ use vectorium::vector::DenseMultiVectorView;
 use vectorium::vector::SparseVectorView;
 use vectorium::{MultiVectorDataset, PlainMultiVecQuantizer};
 
-use crate::pylib::common::{convert_components_to_u16, push_results};
+use crate::pylib::common::{
+    convert_components_to_u16, load_index_err, push_results, save_index_err,
+};
 
 // Helper to load two-level PQ multivector dataset
 fn load_multivec_dataset_pq_8(
@@ -241,11 +243,14 @@ impl SparseMultivecTwoLevelsPQRerankIndex {
     ///
     /// # Multivector Data Folder Structure (Two-Level PQ Quantizer)
     /// The folder must contain the following files:
-    /// * `doclens.npy` – Document lengths (shape: [n_documents], dtype: int32 or int64)
-    /// * `centroids.npy` – Coarse centroids from first-level quantization (shape: [n_centroids, token_dim], dtype: float32)
-    /// * `index_assignment.npy` – Index assignments for documents to centroids (shape: [n_documents, n_tokens], dtype: int32 or int64)
-    /// * `residuals.npy` – PQ-encoded residuals (shape: [n_documents, n_tokens, token_dim], dtype: float32)
-    /// * `pq_centroids.npy` – PQ centroids (shape: [n_centroids, M, subspace_dim], dtype: float32)
+    /// * `doclens.npy` – Document lengths (shape: [n_documents], dtype: int32)
+    /// * `centroids.npy` – Coarse centroids from first-level quantization (shape:
+    ///   [n_coarse_centroids, token_dim], dtype: float32)
+    /// * `index_assignment.npy` – Coarse centroid index per token (shape: [n_tokens], dtype:
+    ///   uint64)
+    /// * `residuals.npy` – PQ codes (shape: [n_tokens, M], dtype: uint8)
+    /// * `pq_centroids.npy` – Flattened PQ centroids (shape: [M * 256 * dsub], dtype: float32,
+    ///   where `dsub = token_dim / M`)
     ///
     #[staticmethod]
     #[pyo3(signature = (sparse_index_path, multivec_data_folder, pq_subspaces))]
@@ -298,6 +303,43 @@ impl SparseMultivecTwoLevelsPQRerankIndex {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
                     "Unsupported pq_subspaces value: {}. Supported: 8, 16, 32, 64",
                     pq_subspaces
+                )));
+            }
+        };
+
+        Ok(SparseMultivecTwoLevelsPQRerankIndex { inner })
+    }
+
+    /// Saves the whole two-stage index — first-stage graph and rerank dataset — to one file.
+    ///
+    /// `build_from_file` reconstructs the index from a saved first-stage index plus the original
+    /// multivector folder; this round-trips the index as it stands, so the PQ-encoded rerank
+    /// dataset does not have to be re-read.
+    pub fn save(&self, path: &str) -> PyResult<()> {
+        match &self.inner {
+            SparseMultivecTwoLevelsPQRerankIndexEnum::M8(index)
+            | SparseMultivecTwoLevelsPQRerankIndexEnum::M16(index)
+            | SparseMultivecTwoLevelsPQRerankIndexEnum::M32(index)
+            | SparseMultivecTwoLevelsPQRerankIndexEnum::M64(index) => index.save_index(path),
+        }
+        .map_err(save_index_err)
+    }
+
+    /// Loads an index written by [`Self::save`].
+    ///
+    /// `pq_subspaces` must match the value used at build time, mirroring `build_from_file`.
+    #[staticmethod]
+    #[pyo3(signature = (path, pq_subspaces))]
+    pub fn load(path: &str, pq_subspaces: usize) -> PyResult<Self> {
+        let index = RerankIndex::load_index(path).map_err(load_index_err)?;
+        let inner = match pq_subspaces {
+            8 => SparseMultivecTwoLevelsPQRerankIndexEnum::M8(index),
+            16 => SparseMultivecTwoLevelsPQRerankIndexEnum::M16(index),
+            32 => SparseMultivecTwoLevelsPQRerankIndexEnum::M32(index),
+            64 => SparseMultivecTwoLevelsPQRerankIndexEnum::M64(index),
+            other => {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "Unsupported pq_subspaces value: {other}. Supported: 8, 16, 32, 64"
                 )));
             }
         };
