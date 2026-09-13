@@ -460,8 +460,7 @@ def query_execution(configs, query_config, experiment_dir, subsection_name, subs
         # Boolean flags: pass bare flag when true, omit when false (clap default).
         if ip.get("hnsw", False):
             command_and_params.append("--hnsw")
-        if ip.get("residuals", False):
-            command_and_params.append("--residuals")
+        # No --residuals here: ivf_search reads residual-vs-plain back from the index.
         if "m-pq" in ip:
             command_and_params.append(f"--m-pq {ip['m-pq']}")
         # ef-search and lambda are only meaningful when using HNSW centroids.

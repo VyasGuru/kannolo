@@ -97,10 +97,6 @@ struct Args {
     #[clap(long, value_parser, default_value_t = 0)]
     pq_subspaces: usize,
 
-    /// Document code width, for `--encoder rabitq-ext`: 2, 4 or 8. Must match the index.
-    #[clap(long, value_parser, default_value_t = 4)]
-    rabitq_total_bits: u32,
-
     /// Query code width, for `--encoder rabitq` (1..=8).
     #[clap(long, value_parser, default_value_t = 1)]
     rabitq_query_bits: u32,

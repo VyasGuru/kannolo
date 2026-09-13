@@ -1284,7 +1284,10 @@ fn build_and_save<Dsrc, Dfinal, G>(
     );
 
     index.print_space_usage_bytes();
-    let _ = index.save_index(output_file);
+    index.save_index(output_file).unwrap_or_else(|e| {
+        eprintln!("Error saving the index to {output_file}: {e:?}");
+        process::exit(1);
+    });
 }
 
 /// Like [`build_and_save`], but for the `permuted`/`streamvbyte` graph types: `convert` runs
@@ -1321,5 +1324,8 @@ fn build_permuted_and_save<Dsrc, Dfinal, Ndst>(
     );
 
     index.print_space_usage_bytes();
-    let _ = index.save_index(output_file);
+    index.save_index(output_file).unwrap_or_else(|e| {
+        eprintln!("Error saving the index to {output_file}: {e:?}");
+        process::exit(1);
+    });
 }

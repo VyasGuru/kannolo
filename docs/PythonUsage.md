@@ -213,6 +213,7 @@ index = SparseMultivecRerankIndex.build_from_file(
 # - pq_centroids.npy    (shape: [M * 256 * dsub], dtype: float32, dsub = token_dim / M)
 # - residuals.npy       (shape: [n_tokens, M], dtype: uint8 -- PQ codes)
 # - index_assignment.npy (shape: [n_tokens], dtype: uint64)
+# - residual_norms.npy  (shape: [n_tokens], dtype: float32) -- optional, picked up if present
 
 index = SparseMultivecTwoLevelsPQRerankIndex.build_from_file(
     sparse_index_path="sparse_index.bin",

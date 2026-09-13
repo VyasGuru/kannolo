@@ -60,8 +60,6 @@ struct Args {
     hnsw: bool,
     #[clap(long)]
     m_pq: Option<usize>,
-    #[clap(long, default_value_t = false)]
-    residuals: bool,
     #[clap(long, default_value_t = 40)]
     ef_search: usize,
     #[clap(long, default_value_t = 0.0)]

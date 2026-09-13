@@ -14,43 +14,51 @@ use rayon::prelude::*;
 
 use vectorium::PlainSparseDataset;
 use vectorium::core::rerank_index::RerankIndex;
-use vectorium::distances::DotProduct;
+use vectorium::distances::{DotProduct, SquaredEuclideanDistance};
 use vectorium::vector::DenseMultiVectorView;
+use vectorium::vector::DenseVectorView;
 use vectorium::vector::SparseVectorView;
-use vectorium::{MultiVectorDataset, PlainMultiVecQuantizer};
+use vectorium::{
+    DatasetGrowable, DenseDataset, MultiVecTwoLevelProductQuantizer, MultiVectorDataset,
+    PlainDenseDatasetGrowable, PlainDenseQuantizer,
+};
 
 use crate::pylib::common::{
     convert_components_to_u16, load_index_err, push_results, save_index_err,
 };
 
-// Helper to load two-level PQ multivector dataset
-fn load_multivec_dataset_pq_8(
-    data_folder: &str,
-) -> PyResult<MultiVectorDataset<PlainMultiVecQuantizer<f32>>> {
-    load_multivec_dataset_pq_generic::<8>(data_folder)
+/// The rerank dataset for one PQ subspace count: tokens stay two-level PQ encoded, exactly as
+/// `hnsw_rerank_search --multivector-quantizer two-levels` keeps them.
+type PqMultivecDataset<const M: usize> =
+    MultiVectorDataset<MultiVecTwoLevelProductQuantizer<M, f16>>;
+
+/// A two-stage index over one PQ subspace count.
+type PqRerankIndex<const M: usize> =
+    RerankIndex<HNSW<PlainSparseDataset<u16, f16, DotProduct>, Graph>, PqMultivecDataset<M>>;
+
+const KSUB: usize = 256;
+/// Bytes of coarse centroid id per encoded token.
+const COARSE_ID_BYTES: usize = 4;
+/// Bytes of residual norm per encoded token, when `residual_norms.npy` is present.
+const NORM_BYTES: usize = 2;
+
+fn io_err(msg: String) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyIOError, _>(msg)
 }
 
-fn load_multivec_dataset_pq_16(
-    data_folder: &str,
-) -> PyResult<MultiVectorDataset<PlainMultiVecQuantizer<f32>>> {
-    load_multivec_dataset_pq_generic::<16>(data_folder)
+fn value_err(msg: String) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyValueError, _>(msg)
 }
 
-fn load_multivec_dataset_pq_32(
-    data_folder: &str,
-) -> PyResult<MultiVectorDataset<PlainMultiVecQuantizer<f32>>> {
-    load_multivec_dataset_pq_generic::<32>(data_folder)
-}
-
-fn load_multivec_dataset_pq_64(
-    data_folder: &str,
-) -> PyResult<MultiVectorDataset<PlainMultiVecQuantizer<f32>>> {
-    load_multivec_dataset_pq_generic::<64>(data_folder)
-}
-
+/// Load the two-level PQ multivector dataset *in its encoded form*.
+///
+/// Each token stays `COARSE_ID_BYTES + M` bytes (plus `NORM_BYTES` when residual norms are
+/// present) — the same blocked payload the CLI builds — rather than being reconstructed into a
+/// `token_dim`-wide f32 vector. `MultiVecTwoLevelPQQueryEvaluator` scores straight off those
+/// codes via ADC, so reconstructing was only ever a memory cost.
 fn load_multivec_dataset_pq_generic<const M: usize>(
     data_folder: &str,
-) -> PyResult<MultiVectorDataset<PlainMultiVecQuantizer<f32>>> {
+) -> PyResult<PqMultivecDataset<M>> {
     use ndarray::Array1;
     use ndarray_npy::ReadNpyExt;
     use std::path::Path;
@@ -60,81 +68,98 @@ fn load_multivec_dataset_pq_generic<const M: usize>(
     let residuals_path = Path::new(data_folder).join("residuals.npy");
     let doclens_path = Path::new(data_folder).join("doclens.npy");
     let assignment_path = Path::new(data_folder).join("index_assignment.npy");
+    let norms_path = Path::new(data_folder).join("residual_norms.npy");
 
     // Load coarse centroids (n_centroids, dim) to determine token_dim
     let coarse_file = std::fs::File::open(&coarse_path).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyIOError, _>(format!(
+        io_err(format!(
             "Error opening centroids.npy at {:?}: {}",
             coarse_path, e
         ))
     })?;
     let coarse_reader = std::io::BufReader::new(coarse_file);
-    let coarse_array: ndarray::Array2<f32> =
-        ndarray::Array2::read_npy(coarse_reader).map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyIOError, _>(format!(
-                "Error reading centroids.npy: {}",
-                e
-            ))
-        })?;
+    let coarse_array: ndarray::Array2<f32> = ndarray::Array2::read_npy(coarse_reader)
+        .map_err(|e| io_err(format!("Error reading centroids.npy: {}", e)))?;
     let (n_coarse, token_dim) = coarse_array.dim();
-    let coarse_flat: Vec<f32> = coarse_array.into_iter().collect();
+
+    if token_dim % M != 0 {
+        return Err(value_err(format!(
+            "token_dim {} is not divisible by M={} for two-level PQ",
+            token_dim, M
+        )));
+    }
+    let dsub = token_dim / M;
+
+    let mut coarse_growable =
+        PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
+            PlainDenseQuantizer::new(token_dim),
+            n_coarse,
+        );
+    for row in coarse_array.rows() {
+        // read_npy yields a C-order array, so each row is contiguous.
+        coarse_growable.push(DenseVectorView::new(row.as_slice().unwrap()));
+    }
+    let coarse_centroids: DenseDataset<PlainDenseQuantizer<f32, SquaredEuclideanDistance>> =
+        coarse_growable.into();
 
     // Load PQ centroids
     let pq_file = std::fs::File::open(&pq_centroids_path).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyIOError, _>(format!(
+        io_err(format!(
             "Error opening pq_centroids.npy at {:?}: {}",
             pq_centroids_path, e
         ))
     })?;
     let pq_reader = std::io::BufReader::new(pq_file);
-    let pq_array: Array1<f32> = Array1::read_npy(pq_reader).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyIOError, _>(format!(
-            "Error reading pq_centroids.npy: {}",
-            e
-        ))
-    })?;
+    let pq_array: Array1<f32> = Array1::read_npy(pq_reader)
+        .map_err(|e| io_err(format!("Error reading pq_centroids.npy: {}", e)))?;
     let pq_flat = pq_array.to_vec();
 
-    let dsub = token_dim / M;
-    const KSUB: usize = 256;
+    let expected_pq_len = M * KSUB * dsub;
+    if pq_flat.len() != expected_pq_len {
+        return Err(value_err(format!(
+            "pq_centroids.npy size mismatch: got {}, expected {}",
+            pq_flat.len(),
+            expected_pq_len
+        )));
+    }
 
-    let mut pq_reconstruction_centroids = Vec::new();
+    let mut pq_centroids: Vec<DenseDataset<PlainDenseQuantizer<f32, SquaredEuclideanDistance>>> =
+        Vec::with_capacity(M);
     for m in 0..M {
-        let offset = m * KSUB * dsub;
-        pq_reconstruction_centroids.extend_from_slice(&pq_flat[offset..offset + KSUB * dsub]);
+        let mut subspace =
+            PlainDenseDatasetGrowable::with_capacity(PlainDenseQuantizer::new(dsub), KSUB);
+        for code in 0..KSUB {
+            let offset = m * KSUB * dsub + code * dsub;
+            subspace.push(DenseVectorView::new(&pq_flat[offset..offset + dsub]));
+        }
+        pq_centroids.push(subspace.into());
     }
 
     // Load doclens
     let doclens_file = std::fs::File::open(&doclens_path).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyIOError, _>(format!(
+        io_err(format!(
             "Error opening doclens.npy at {:?}: {}",
             doclens_path, e
         ))
     })?;
     let doclens_reader = std::io::BufReader::new(doclens_file);
-    let doclens_array: Array1<i32> = Array1::read_npy(doclens_reader).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Error reading doclens.npy: {}", e))
-    })?;
+    let doclens_array: Array1<i32> = Array1::read_npy(doclens_reader)
+        .map_err(|e| io_err(format!("Error reading doclens.npy: {}", e)))?;
     let doclens: Vec<usize> = doclens_array.iter().map(|&x| x as usize).collect();
 
-    // Load residuals
+    // Load residuals (PQ codes)
     let residuals_file = std::fs::File::open(&residuals_path).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyIOError, _>(format!(
+        io_err(format!(
             "Error opening residuals.npy at {:?}: {}",
             residuals_path, e
         ))
     })?;
     let residuals_reader = std::io::BufReader::new(residuals_file);
     let residuals_array: ndarray::Array2<u8> = ndarray::Array2::read_npy(residuals_reader)
-        .map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyIOError, _>(format!(
-                "Error reading residuals.npy: {}",
-                e
-            ))
-        })?;
+        .map_err(|e| io_err(format!("Error reading residuals.npy: {}", e)))?;
     let (n_tokens, m_check) = residuals_array.dim();
     if m_check != M {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+        return Err(value_err(format!(
             "residuals.npy has {} subspaces, expected {}",
             m_check, M
         )));
@@ -142,89 +167,117 @@ fn load_multivec_dataset_pq_generic<const M: usize>(
 
     // Load index assignments
     let assignment_file = std::fs::File::open(&assignment_path).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyIOError, _>(format!(
+        io_err(format!(
             "Error opening index_assignment.npy at {:?}: {}",
             assignment_path, e
         ))
     })?;
     let assignment_reader = std::io::BufReader::new(assignment_file);
-    let assignment_array: Array1<u64> = Array1::read_npy(assignment_reader).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyIOError, _>(format!(
-            "Error reading index_assignment.npy: {}",
-            e
-        ))
-    })?;
+    let assignment_array: Array1<u64> = Array1::read_npy(assignment_reader)
+        .map_err(|e| io_err(format!("Error reading index_assignment.npy: {}", e)))?;
     if assignment_array.len() != n_tokens {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+        return Err(value_err(format!(
             "assignment_array length {} != n_tokens {}",
             assignment_array.len(),
             n_tokens
         )));
     }
 
-    // Reconstruct documents from two-level PQ
-    let mut reconstructed_tokens = Vec::with_capacity(n_tokens * token_dim);
-    for token_idx in 0..n_tokens {
-        let coarse_idx = assignment_array[token_idx] as usize;
-        if coarse_idx >= n_coarse {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "coarse_idx {} >= n_coarse {}",
-                coarse_idx, n_coarse
+    // Optional residual norms: their presence decides the encoded token layout, so it has to
+    // match what the folder was written with.
+    let norms_array: Option<Array1<f32>> = if norms_path.exists() {
+        let norms_file = std::fs::File::open(&norms_path).map_err(|e| {
+            io_err(format!(
+                "Error opening residual_norms.npy at {:?}: {}",
+                norms_path, e
+            ))
+        })?;
+        let norms_reader = std::io::BufReader::new(norms_file);
+        let norms: Array1<f32> = Array1::read_npy(norms_reader)
+            .map_err(|e| io_err(format!("Error reading residual_norms.npy: {}", e)))?;
+        if norms.len() != n_tokens {
+            return Err(value_err(format!(
+                "residual_norms.npy length mismatch: got {}, expected {}",
+                norms.len(),
+                n_tokens
             )));
         }
-        let coarse_offset = coarse_idx * token_dim;
+        Some(norms)
+    } else {
+        None
+    };
+    let with_norms = norms_array.is_some();
 
-        for subspace_idx in 0..M {
-            let code = residuals_array[[token_idx, subspace_idx]];
-            let pq_offset = subspace_idx * KSUB * dsub + (code as usize) * dsub;
+    let quantizer = MultiVecTwoLevelProductQuantizer::<M, f16>::from_pretrained(
+        token_dim,
+        coarse_centroids,
+        pq_centroids,
+        with_norms,
+    );
 
-            for d in 0..dsub {
-                let coarse_val = coarse_flat[coarse_offset + subspace_idx * dsub + d];
-                let residual_val = pq_reconstruction_centroids[pq_offset + d];
-                reconstructed_tokens.push(coarse_val + residual_val);
+    // Encoded blocked payload per document:
+    // [coarse_ids: 4*n][pq_codes: M*n][norms: 2*n (f16) if enabled]
+    let bytes_per_token = COARSE_ID_BYTES + M + if with_norms { NORM_BYTES } else { 0 };
+    let mut encoded_data: Vec<u8> = Vec::with_capacity(n_tokens * bytes_per_token);
+
+    let mut token_offset = 0usize;
+    for &doclen in &doclens {
+        if token_offset + doclen > n_tokens {
+            return Err(value_err(format!(
+                "doclens.npy spans {} tokens, more than the {} in residuals.npy",
+                token_offset + doclen,
+                n_tokens
+            )));
+        }
+        for i in 0..doclen {
+            let coarse_idx = assignment_array[token_offset + i];
+            if coarse_idx as usize >= n_coarse {
+                return Err(value_err(format!(
+                    "coarse_idx {} >= n_coarse {}",
+                    coarse_idx, n_coarse
+                )));
+            }
+            encoded_data.extend((coarse_idx as u32).to_le_bytes());
+        }
+        for i in 0..doclen {
+            for subspace_idx in 0..M {
+                encoded_data.push(residuals_array[[token_offset + i, subspace_idx]]);
             }
         }
+        if let Some(ref norms) = norms_array {
+            for i in 0..doclen {
+                encoded_data
+                    .extend_from_slice(&f16::from_f32(norms[token_offset + i]).to_le_bytes());
+            }
+        }
+        token_offset += doclen;
+    }
+
+    if token_offset != n_tokens {
+        return Err(value_err(format!(
+            "doclens.npy covers {} tokens, expected {}",
+            token_offset, n_tokens
+        )));
     }
 
     let mut offsets = vec![0];
     for &doclen in &doclens {
-        offsets.push(offsets.last().unwrap() + doclen * token_dim);
+        offsets.push(offsets.last().unwrap() + doclen * bytes_per_token);
     }
 
-    let encoder = PlainMultiVecQuantizer::new(token_dim);
     Ok(MultiVectorDataset::from_raw(
-        reconstructed_tokens.into_boxed_slice(),
+        encoded_data.into_boxed_slice(),
         offsets.into(),
-        encoder,
+        quantizer,
     ))
 }
 
 // Enum to handle different PQ subspace counts
 enum SparseMultivecTwoLevelsPQRerankIndexEnum {
-    M8(
-        RerankIndex<
-            HNSW<PlainSparseDataset<u16, f16, DotProduct>, Graph>,
-            MultiVectorDataset<PlainMultiVecQuantizer<f32>>,
-        >,
-    ),
-    M16(
-        RerankIndex<
-            HNSW<PlainSparseDataset<u16, f16, DotProduct>, Graph>,
-            MultiVectorDataset<PlainMultiVecQuantizer<f32>>,
-        >,
-    ),
-    M32(
-        RerankIndex<
-            HNSW<PlainSparseDataset<u16, f16, DotProduct>, Graph>,
-            MultiVectorDataset<PlainMultiVecQuantizer<f32>>,
-        >,
-    ),
-    M64(
-        RerankIndex<
-            HNSW<PlainSparseDataset<u16, f16, DotProduct>, Graph>,
-            MultiVectorDataset<PlainMultiVecQuantizer<f32>>,
-        >,
-    ),
+    M8(PqRerankIndex<8>),
+    M16(PqRerankIndex<16>),
+    M32(PqRerankIndex<32>),
+    M64(PqRerankIndex<64>),
 }
 
 #[pyclass]
@@ -252,6 +305,16 @@ impl SparseMultivecTwoLevelsPQRerankIndex {
     /// * `pq_centroids.npy` – Flattened PQ centroids (shape: [M * 256 * dsub], dtype: float32,
     ///   where `dsub = token_dim / M`)
     ///
+    /// Optionally:
+    /// * `residual_norms.npy` – Per-token residual norm (shape: [n_tokens], dtype: float32),
+    ///   for folders whose PQ codes were fitted to unit-normalised residuals. Its presence
+    ///   changes the encoded token layout, so it is picked up automatically, exactly as
+    ///   `hnsw_rerank_search --multivector-quantizer two-levels` does.
+    ///
+    /// The tokens stay PQ-encoded in memory — `COARSE_ID_BYTES + M` bytes each, plus
+    /// `NORM_BYTES` with residual norms — and are scored by ADC. They are never reconstructed
+    /// into `token_dim`-wide f32 vectors.
+    ///
     #[staticmethod]
     #[pyo3(signature = (sparse_index_path, multivec_data_folder, pq_subspaces))]
     pub fn build_from_file(
@@ -271,36 +334,24 @@ impl SparseMultivecTwoLevelsPQRerankIndex {
             })?;
 
         let inner = match pq_subspaces {
-            8 => {
-                let multivec_dataset = load_multivec_dataset_pq_8(multivec_data_folder)?;
-                SparseMultivecTwoLevelsPQRerankIndexEnum::M8(RerankIndex::new(
-                    sparse_index,
-                    multivec_dataset,
-                ))
-            }
-            16 => {
-                let multivec_dataset = load_multivec_dataset_pq_16(multivec_data_folder)?;
-                SparseMultivecTwoLevelsPQRerankIndexEnum::M16(RerankIndex::new(
-                    sparse_index,
-                    multivec_dataset,
-                ))
-            }
-            32 => {
-                let multivec_dataset = load_multivec_dataset_pq_32(multivec_data_folder)?;
-                SparseMultivecTwoLevelsPQRerankIndexEnum::M32(RerankIndex::new(
-                    sparse_index,
-                    multivec_dataset,
-                ))
-            }
-            64 => {
-                let multivec_dataset = load_multivec_dataset_pq_64(multivec_data_folder)?;
-                SparseMultivecTwoLevelsPQRerankIndexEnum::M64(RerankIndex::new(
-                    sparse_index,
-                    multivec_dataset,
-                ))
-            }
+            8 => SparseMultivecTwoLevelsPQRerankIndexEnum::M8(RerankIndex::new(
+                sparse_index,
+                load_multivec_dataset_pq_generic::<8>(multivec_data_folder)?,
+            )),
+            16 => SparseMultivecTwoLevelsPQRerankIndexEnum::M16(RerankIndex::new(
+                sparse_index,
+                load_multivec_dataset_pq_generic::<16>(multivec_data_folder)?,
+            )),
+            32 => SparseMultivecTwoLevelsPQRerankIndexEnum::M32(RerankIndex::new(
+                sparse_index,
+                load_multivec_dataset_pq_generic::<32>(multivec_data_folder)?,
+            )),
+            64 => SparseMultivecTwoLevelsPQRerankIndexEnum::M64(RerankIndex::new(
+                sparse_index,
+                load_multivec_dataset_pq_generic::<64>(multivec_data_folder)?,
+            )),
             _ => {
-                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                return Err(value_err(format!(
                     "Unsupported pq_subspaces value: {}. Supported: 8, 16, 32, 64",
                     pq_subspaces
                 )));
@@ -317,10 +368,10 @@ impl SparseMultivecTwoLevelsPQRerankIndex {
     /// dataset does not have to be re-read.
     pub fn save(&self, path: &str) -> PyResult<()> {
         match &self.inner {
-            SparseMultivecTwoLevelsPQRerankIndexEnum::M8(index)
-            | SparseMultivecTwoLevelsPQRerankIndexEnum::M16(index)
-            | SparseMultivecTwoLevelsPQRerankIndexEnum::M32(index)
-            | SparseMultivecTwoLevelsPQRerankIndexEnum::M64(index) => index.save_index(path),
+            SparseMultivecTwoLevelsPQRerankIndexEnum::M8(index) => index.save_index(path),
+            SparseMultivecTwoLevelsPQRerankIndexEnum::M16(index) => index.save_index(path),
+            SparseMultivecTwoLevelsPQRerankIndexEnum::M32(index) => index.save_index(path),
+            SparseMultivecTwoLevelsPQRerankIndexEnum::M64(index) => index.save_index(path),
         }
         .map_err(save_index_err)
     }
@@ -331,14 +382,21 @@ impl SparseMultivecTwoLevelsPQRerankIndex {
     #[staticmethod]
     #[pyo3(signature = (path, pq_subspaces))]
     pub fn load(path: &str, pq_subspaces: usize) -> PyResult<Self> {
-        let index = RerankIndex::load_index(path).map_err(load_index_err)?;
         let inner = match pq_subspaces {
-            8 => SparseMultivecTwoLevelsPQRerankIndexEnum::M8(index),
-            16 => SparseMultivecTwoLevelsPQRerankIndexEnum::M16(index),
-            32 => SparseMultivecTwoLevelsPQRerankIndexEnum::M32(index),
-            64 => SparseMultivecTwoLevelsPQRerankIndexEnum::M64(index),
+            8 => SparseMultivecTwoLevelsPQRerankIndexEnum::M8(
+                RerankIndex::load_index(path).map_err(load_index_err)?,
+            ),
+            16 => SparseMultivecTwoLevelsPQRerankIndexEnum::M16(
+                RerankIndex::load_index(path).map_err(load_index_err)?,
+            ),
+            32 => SparseMultivecTwoLevelsPQRerankIndexEnum::M32(
+                RerankIndex::load_index(path).map_err(load_index_err)?,
+            ),
+            64 => SparseMultivecTwoLevelsPQRerankIndexEnum::M64(
+                RerankIndex::load_index(path).map_err(load_index_err)?,
+            ),
             other => {
-                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                return Err(value_err(format!(
                     "Unsupported pq_subspaces value: {other}. Supported: 8, 16, 32, 64"
                 )));
             }
